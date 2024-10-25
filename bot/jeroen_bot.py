@@ -43,10 +43,6 @@ class JeroenBot(BotAI):
         build_pylons: BuildPylons = BuildPylons().execute(self)
         return
 
-        for worker in self.hub.role_manager.get_units_by_role(UnitRole.ATTACKING, UnitTypeId.PROBE).idle:
-            worker.attack(self.enemy_start_locations[0].random_on_distance(random.randrange(1,30)).towards(self.start_location, 20))
-
-
 
 
 
