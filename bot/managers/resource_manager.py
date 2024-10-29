@@ -1,12 +1,17 @@
-from typing import List, Callable, Dict, Set, Optional
+from typing import List, Callable, Dict, Set, Optional, Union
 
 from loguru import logger
+from sc2.game_data import Cost
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
+from scipy.constants import proton_mass
 
 from bot.consts import UnitRole
+from bot.jeroen_bot_settings import JeroenBotSettings
 from bot.managers.manager import Manager
 
 from cython_extensions import (
@@ -35,39 +40,44 @@ class ResourceManager(Manager):
 
         self.available_mineral_fields: Units = Units([], self.ai)
 
-    def on_start(self):
-        pass
+        self.resource_reservation: Cost = Cost(minerals=0,vespene=0)
 
-    def on_step(self, iteration: int):
+    async def on_step(self, iteration: int):
 
         self.available_mineral_fields = self.get_available_mineral_fields()
 
-        workers:Units = self.hub.role_manager.get_units_by_role(UnitRole.GATHERING)
+        workers:Units = self.ai.role_manager.get_units_by_role(UnitRole.GATHERING)
 
         #logger.info(f"Gathering workers: {workers.amount}")
 
         if iteration % 4 == 0 or len(self.worker_to_mineral_patch_dict) == 0:
             self.assign_workers(workers)
 
+    async def on_unit_destroyed(self, unit_tag: int):
+        self.release_worker_by_tag(unit_tag)
 
-        pass
+    def release_worker_by_tag(self, worker_tag: int):
+        if worker_tag in self.worker_to_mineral_patch_dict:
+            self.remove_worker_from_mineral(worker_tag)
+        if worker_tag in self.worker_to_geyser_dict:
+            self.remove_worker_from_vespene(worker_tag)
 
-    def on_unit_created(self, unit):
-        pass
+    def release_worker(self, worker: Unit):
+        if worker.tag in self.worker_to_mineral_patch_dict:
+            self.remove_worker_from_mineral(worker.tag)
+        if worker.tag in self.worker_to_geyser_dict:
+            self.remove_worker_from_vespene(worker.tag)
 
-    def on_unit_destroyed(self, unit_tag: int):
-
-        if unit_tag in self.worker_to_mineral_patch_dict:
-            self.remove_worker_from_mineral(unit_tag)
-        if unit_tag in self.worker_to_geyser_dict:
-            self.remove_worker_from_vespene(unit_tag)
+    def release_workers(self, workers: Units):
+        for worker in workers:
+            self.release_worker(worker)
 
     def assign_workers(self, workers: Units) -> None:
 
         if not workers or not self.ai.townhalls:
             return
 
-        if len(self.worker_to_mineral_patch_dict) > len(self.worker_to_geyser_dict)*5:
+        if len(self.worker_to_mineral_patch_dict) > len(self.worker_to_geyser_dict)*JeroenBotSettings.MINERAL_GAS_DISTRIBUTION:
             if self.ai.gas_buildings.ready.filter(lambda g: g.vespene_contents > 0):
                 self.assign_worker_to_gas_buildings()
 
@@ -144,8 +154,8 @@ class ResourceManager(Manager):
 
         if (
             not self.ai.gas_buildings
-            or not self.ai.townhalls.ready
-            or not self.ai.workers
+            or not self.ai.unit_manager.own_townhalls.ready
+            or not self.ai.unit_manager.own_workers
         ):
             return
 
@@ -188,14 +198,14 @@ class ResourceManager(Manager):
                 self.worker_tag_to_nexus_tag_dict[worker.tag] = closest_nexus.tag
                 self.remove_worker_from_mineral(worker.tag)
 
-                logger.info(f"{self.get_workers_on_geyser(gas_building)}")
+                #logger.info(f"{self.get_workers_on_geyser(gas_building)}")
 
                 break
 
 
     def select_worker(self, target_position: Point2) -> Optional[Unit]:
 
-        workers: Units = self.hub.role_manager.get_units_by_roles([UnitRole.IDLE, UnitRole.GATHERING], unit_type=UnitTypeId.PROBE)
+        workers: Units = self.ai.role_manager.get_units_by_role(UnitRole.GATHERING, self.ai.race_worker)
 
         unassigned_workers: Units = workers.tags_not_in(
             list(self.worker_to_mineral_patch_dict) + list(self.worker_to_geyser_dict)
@@ -304,7 +314,7 @@ class ResourceManager(Manager):
         return available_minerals
 
     def remove_gas_building(self, building_tag: int):
-        logger.info(f"remove_gas_building {building_tag}")
+        #logger.info(f"remove_gas_building {building_tag}")
         if building_tag in self.geyser_to_worker_dict:
             del self.geyser_to_worker_dict[building_tag]
             self.worker_to_geyser_dict = {
@@ -337,14 +347,28 @@ class ResourceManager(Manager):
             and cy_distance_to(mineral_field.position, nexus.position) < 10
         )
 
+    def get_mineral_fields_at_position(self, position: Point2) -> Units:
+        return self.ai.mineral_field.filter(
+            lambda mineral_field:
+            mineral_field.is_visible
+            and not mineral_field.is_snapshot
+            and cy_distance_to(mineral_field.position, position) < 10
+        )
+
     def get_total_minerals_at_nexus(self, nexus: Unit) -> int:
+        return self.get_total_minerals_at_position(nexus.position)
+
+    def get_total_minerals_at_position(self, position: Point2) -> int:
         total_minerals: int = 0
-        mineral_fields = self.get_mineral_fields_at_nexus(nexus)
+        mineral_fields = self.get_mineral_fields_at_position(position)
         for mf in mineral_fields:
             total_minerals += mf.mineral_contents
         return total_minerals
 
     def get_total_gas_at_nexus(self, nexus: Unit) -> int:
+        return self.get_total_gas_at_position(nexus.position)
+
+    def get_total_gas_at_position(self, position: Point2) -> int:
 
         total_gas: int = 0
 
@@ -352,7 +376,7 @@ class ResourceManager(Manager):
             lambda vespene_geyser:
             vespene_geyser.is_visible
             and not vespene_geyser.is_snapshot
-            and cy_distance_to(vespene_geyser.position, nexus.position) < 10
+            and cy_distance_to(vespene_geyser.position, position) < 10
         )
 
         if not geysers:
@@ -363,6 +387,33 @@ class ResourceManager(Manager):
 
 
         return total_gas
+
+    def make_resource_reservation(self, item_id: Union[UnitTypeId, UpgradeId, AbilityId]):
+        cost: Cost = self.ai.calculate_cost(item_id)
+        if cost:
+            self.resource_reservation.minerals += cost.minerals
+            self.resource_reservation.vespene += cost.vespene
+
+    def remove_resource_reservation(self, item_id: Union[UnitTypeId, UpgradeId, AbilityId]):
+        cost: Cost = self.ai.calculate_cost(item_id)
+        if cost:
+            self.resource_reservation.minerals =  max(0, self.resource_reservation.minerals -cost.minerals)
+            self.resource_reservation.vespene = max(0, self.resource_reservation.vespene -cost.vespene)
+
+    def can_afford(self, item_id: Union[UnitTypeId, UpgradeId, AbilityId]):
+        cost: Cost = self.ai.calculate_cost(item_id)
+        if self.minerals >= cost.minerals and self.vespene >= cost.vespene:
+            return True
+        return False
+
+    @property
+    def minerals(self):
+        return self.ai.minerals - self.resource_reservation.minerals
+
+    @property
+    def vespene(self):
+        return self.ai.vespene - self.resource_reservation.vespene
+
 
 
     @property
@@ -381,6 +432,14 @@ class ResourceManager(Manager):
             resource_dict[g.tag] = g
 
         return resource_dict
+
+    @property
+    def minerals_per_minute(self):
+        return self.ai.state.score.collection_rate_minerals + 1
+
+    @property
+    def vespene_per_minute(self):
+        return self.ai.state.score.collection_rate_vespene + 1
 
 
 

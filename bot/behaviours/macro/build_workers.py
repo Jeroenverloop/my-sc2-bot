@@ -14,15 +14,16 @@ class BuildWorkers(MacroBehaviour):
     def __init__(self):
         super().__init__()
 
-    def execute(self, ai: "JeroenBot"):
+    def execute(self, ai: "JeroenBot") -> bool:
 
-        worker_count = ai.workers.amount + ai.already_pending(UnitTypeId.PROBE)
+        worker_count = ai.unit_manager.own_workers.amount + ai.already_pending(ai.race_worker)
 
-        if not ai.can_afford(UnitTypeId.PROBE) or worker_count >= JeroenBotSettings.MAX_WORKERS:
-            return
+        if not ai.resource_manager.can_afford(ai.race_worker) or worker_count >= JeroenBotSettings.MAX_WORKERS:
+            return False
 
+        for townhall in ai.townhalls.ready.idle:
+            townhall.train(ai.race_worker)
+            return True
 
-        for nexus in ai.townhalls.ready.idle:
-            nexus.train(UnitTypeId.PROBE)
-            return
+        return False
 

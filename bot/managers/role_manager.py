@@ -21,37 +21,24 @@ class RoleManager(Manager):
             role.name: set() for role in UnitRole
         }
 
-    def on_start(self):
-        pass
-
-    def on_step(self, iteration):
+    async def on_step(self, iteration):
 
         #if we have workers without a role set them GATHERING
-        for worker in self.ai.workers:
+        for worker in self.ai.unit_manager.own_workers:
             if not self.has_role(worker.tag):
                 self.assign_role(worker.tag, UnitRole.GATHERING)
 
-        #Back to GATHERING when BUILDER is done building.
-        for builders in self.get_units_by_role(UnitRole.BUILDER, UnitTypeId.PROBE).idle:
-            self.assign_role(builders.tag, UnitRole.GATHERING)
 
-    def on_unit_created(self, unit: Unit):
-        if unit.type_id == UnitTypeId.PROBE:
-            builder_count:int = self.hub.role_manager.get_units_by_role(UnitRole.BUILDING, UnitTypeId.PROBE).amount
-            if self.ai.need_builder and builder_count < 1 + math.floor(self.ai.townhalls.amount/2):
-                unit.stop()
-                self.assign_role(unit.tag, UnitRole.BUILDING)
-
-    def on_unit_destroyed(self, unit_tag: int):
-        pass
+    async def on_unit_destroyed(self, unit_tag: int):
+        self.remove_unit_from_role(unit_tag)
     
 
     def assign_role(self, unit_tag: int, role: UnitRole):
-        self.remove_role(unit_tag)
+        self.remove_unit_from_role(unit_tag)
         self.unit_roles[role.name].add(unit_tag)
-        logger.info(f"Assigned {role.name} to {unit_tag}")
+        #logger.info(f"Assigned {role.name} to {unit_tag}")
 
-    def remove_role(self, unit_tag: int):
+    def remove_unit_from_role(self, unit_tag: int):
         
         for role in self.unit_roles:
             if unit_tag in self.unit_roles[role]:

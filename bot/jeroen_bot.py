@@ -1,186 +1,202 @@
-import random
-from typing import List
+from typing import Set, List
 
-from cython_extensions import cy_closest_to
+from cython_extensions import cy_distance_to
 from loguru import logger
+from s2clientprotocol.debug_pb2 import Color
 from sc2.bot_ai import BotAI
-from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
-from sc2.position import Point2
+from sc2.position import Point2, Point3
 from sc2.unit import Unit
-from sc2.units import Units
 
 from bot.behaviours.macro.build_gas import BuildGas
 from bot.behaviours.macro.build_pylons import BuildPylons
 from bot.behaviours.macro.build_workers import BuildWorkers
+from bot.behaviours.macro.expand import Expand
+from bot.behaviours.macro.production_controller import ProductionController
 from bot.behaviours.macro.resource_gathering import ResourceGathering
+from bot.behaviours.macro.upgrade_controller import UpgradeController
+from bot.consts import UnitValueType
+from bot.helpers.structure_helper import RACE_TOWNHALLS, RACE_TOWNHALLS_BASE
+from bot.helpers.unit_helper import RACE_WORKER
 from bot.jeroen_bot_settings import JeroenBotSettings
-from bot.consts import UnitRole
+from bot.managers.build_manager import BuildManager
+from bot.managers.debug_manager import DebugManager
+from bot.managers.expansion_manager import ExpansionManager
 from bot.managers.hub import Hub
+from bot.managers.path_manager import PathManager
+from bot.managers.resource_manager import ResourceManager
+from bot.managers.role_manager import RoleManager
+from bot.managers.tech_manager import TechManager
+from bot.managers.terrain_manager import TerrainManager
+from bot.managers.unit_manager import UnitManager
+from bot.models.army_composition import ArmyComposition
+from bot.models.expansion import Expansion
+from bot.models.unit_composition_configuration import UnitCompositionConfiguration
 
 
 class JeroenBot(BotAI):
 
+    hub: Hub
+
     def __init__(self):
 
-        self.hub: Hub = Hub(self)
-        self.need_builder: bool = False
+        self.army_composition: ArmyComposition = ArmyComposition({
+            UnitTypeId.ZEALOT : UnitCompositionConfiguration(UnitTypeId.ZEALOT, 50, UnitValueType.Amount, 5),
+            UnitTypeId.IMMORTAL : UnitCompositionConfiguration(UnitTypeId.IMMORTAL, 3, UnitValueType.Amount, 1),
+            UnitTypeId.COLOSSUS: UnitCompositionConfiguration(UnitTypeId.COLOSSUS, 3, UnitValueType.Amount, 0),
+            UnitTypeId.STALKER: UnitCompositionConfiguration(UnitTypeId.STALKER, 50, UnitValueType.Amount, 4),
+            UnitTypeId.TEMPEST: UnitCompositionConfiguration(UnitTypeId.TEMPEST, 5, UnitValueType.Amount, 1),
+            UnitTypeId.VOIDRAY: UnitCompositionConfiguration(UnitTypeId.VOIDRAY, 5, UnitValueType.Amount, 2),
+            UnitTypeId.CARRIER: UnitCompositionConfiguration(UnitTypeId.CARRIER, 5, UnitValueType.Amount, 0),
+        })
+
+        self.hub = Hub(self)
+
 
     async def on_start(self) -> None:
-        self.hub.on_start()
+        await self.hub.on_start()
+
+    async def _prepare_step(self, state, proto_game_info):
+        await super(JeroenBot, self)._prepare_step(state, proto_game_info)
+
+        self.unit_manager.prepare_units()
+
 
     async def on_step(self, iteration: int) -> None:
-        self.hub.on_step(iteration)
+        await self.hub.on_step(iteration)
 
-        minerals_left:int = self.hub.resource_manager.get_total_minerals_at_nexus(self.townhalls.ready.first)
-        gas_left:int = self.hub.resource_manager.get_total_gas_at_nexus(self.townhalls.ready.first)
+        BuildWorkers().execute(self)
+        ResourceGathering().execute(self)
+        BuildGas().execute(self)
+        BuildPylons().execute(self)
+        Expand().execute(self)
+        ProductionController().execute(self)
+        #upgrades: UpgradeController = UpgradeController().execute(self)
 
-        #logger.info(f"minerals left: {minerals_left} gas left: {gas_left}")
+        goal: Point2 = self.enemy_start_locations[0]
+        closest_expansion_to_enemy: Expansion = self.expansion_manager.main_base
+        chosen_path: List[Point2] = []
+        smallest_dist: float = -1
 
-        build_workers: BuildWorkers = BuildWorkers().execute(self)
-        gather: ResourceGathering = ResourceGathering().execute(self)
-        build_gas: BuildGas = BuildGas().execute(self)
-        build_pylons: BuildPylons = BuildPylons().execute(self)
-        return
+        for e in self.expansion_manager.expansions:
 
+            path_to_enemy: List[Point2] = self.terrain_manager.find_path(e.location, goal, self.terrain_manager.ground_grid, 1, True)
+            path_dist: float = self.terrain_manager.calculate_path_distance(e.location, path_to_enemy)
 
+            if smallest_dist < 0:
+                closest_expansion_to_enemy = e
+                smallest_dist = path_dist
+                chosen_path = path_to_enemy
+            elif path_dist < smallest_dist:
+                closest_expansion_to_enemy = e
+                smallest_dist = path_dist
+                chosen_path = path_to_enemy
 
+        chosen_point: Point2 = closest_expansion_to_enemy.location
+        for p in chosen_path:
+            if cy_distance_to(p,closest_expansion_to_enemy.location) > 30:
+                chosen_point = p
+                break
 
-        builders:Units = self.hub.role_manager.get_units_by_role(UnitRole.BUILDING, UnitTypeId.PROBE)
+        color: Point3 = Point3((255,0,0))
+        height: int = 15
 
-        if not builders:
-            self.need_builder = True
-        else:
-            self.need_builder = False
-            builder = builders.random
-            #logger.info(builder)
+        for i, p in enumerate(chosen_path):
+            if i == 0:
+                el = closest_expansion_to_enemy.location
+                point1 = Point3((el.x, el.y, height))
+                point2 = Point3((p.x, p.y, height))
 
-            supply_left = self.supply_left + (self.already_pending(UnitTypeId.PYLON)*8)
-
-            if self.can_afford(UnitTypeId.PYLON) and supply_left < 2 + self.townhalls.ready.amount*2:
-                townhall = self.townhalls.ready.random
-                if townhall:
-                    location = townhall.position.random_on_distance(random.randrange(1,6)).towards(self.enemy_start_locations[0],6)
-                    if builder.orders:
-                        order_exists = filter(lambda order: order.target == location, builder.orders)
-                        if not order_exists:
-                            builder.build(UnitTypeId.PYLON, location, queue=True)
-                    else:
-                        builder.build(UnitTypeId.PYLON, location)
-                    return
-
-            if self.can_afford(UnitTypeId.ASSIMILATOR):
-                for nexus in self.townhalls.ready:
-                    geysers: Units = self.vespene_geyser.filter(lambda g: g.distance_to(nexus) < 10)
-
-                    for geyser in geysers:
-                        if self.gas_buildings and cy_closest_to(geyser.position, self.gas_buildings).distance_to(geyser) < 1:
-                            continue
-                        if builder.orders:
-                            order_exists = filter(lambda order: order.target == geyser, builder.orders)
-                            if not order_exists:
-                                builder.build_gas(geyser, queue=True)
-                                builder.stop(queue=True)
-                        else:
-                            builder.build_gas(geyser)
-                            builder.stop(queue=True)
-                        return
-
-            workers_on_gas = len(self.hub.resource_manager.worker_to_geyser_dict)
-            workers_on_minerals = len(self.hub.resource_manager.worker_to_mineral_patch_dict)
-
-            mining_workers = workers_on_gas + workers_on_minerals
-
-            if self.townhalls.amount < 7 and ((self.can_afford(UnitTypeId.NEXUS) and mining_workers > self.townhalls.amount*14) or self.minerals > 1000):
-
-                location: Point2 = await self.get_next_expansion()
-
-                if builder.orders:
-                    order_exists = filter(lambda order: order.target == location, builder.orders)
-                    if not order_exists:
-                        builder.build(UnitTypeId.NEXUS, location, queue=True)
-                else:
-                    builder.build(UnitTypeId.NEXUS, location)
-                return
-
-        workers_on_gas = self.hub.resource_manager.worker_to_geyser_dict.copy()
-        workers_on_minerals = self.hub.resource_manager.worker_to_mineral_patch_dict.copy()
-
-        mining_workers = len(workers_on_gas) + len(workers_on_minerals)
-
-        unit_tags: set[int] = set()
-
-        if mining_workers >= 30 and self.minerals >= 1000:
-            while len(workers_on_gas) > 0:
-                worker_tag = workers_on_gas.popitem()[0]
-                self.hub.resource_manager.remove_worker_from_vespene(worker_tag)
-                self.hub.role_manager.assign_role(worker_tag, UnitRole.ATTACKING)
-                unit_tags.add(worker_tag)
-            while len(workers_on_minerals) > 16:
-                worker_tag = workers_on_minerals.popitem()[0]
-                self.hub.resource_manager.remove_worker_from_mineral(worker_tag)
-                self.hub.role_manager.assign_role(worker_tag, UnitRole.ATTACKING)
-                unit_tags.add(worker_tag)
-
-            for unit in self.state.observation_raw.units:
-                if unit.tag in unit_tags:
-
-                    unit_obj = Unit(
-                        unit,
-                        self
-                    )
-                    logger.info(unit_obj.type_id)
-                    unit_obj.attack(self.enemy_start_locations[0].random_on_distance(random.randrange(1,30)).towards(self.start_location, 20))
+                self.client.debug_line_out(point1,point2, color)
+            else:
+                el = chosen_path[i-1]
+                point1 = Point3((el.x, el.y, height))
+                point2 = Point3((p.x, p.y, height))
+                self.client.debug_line_out(point1, point2, color)
 
 
+        for unit in self.unit_manager.own_army:
 
+            if self.unit_manager.own_army_value > 4000:
+                unit.attack(self.enemy_start_locations[0])
+            else:
+                if closest_expansion_to_enemy and chosen_path:
+                    if unit.is_idle:
+                        unit.attack(chosen_point)
+
+
+        for expansion in self.expansion_manager.expansions:
+            await expansion.placement_info.draw_building_placements()
 
 
     async def on_unit_created(self, unit: Unit) -> None:
-        self.hub.on_unit_created(unit)
-        logger.info(f"Unit {unit.type_id} was created")
+        await self.hub.on_unit_created(unit)
 
     async def on_unit_destroyed(self, unit_tag: int) -> None:
-        self.hub.on_unit_destroyed(unit_tag)
-        logger.info(f"Unit with tag {unit_tag} was created")
+        await self.hub.on_unit_destroyed(unit_tag)
+
+    async def on_building_construction_started(self, unit: Unit):
+        await self.hub.on_building_construction_started(unit)
 
     async def on_building_construction_complete(self, unit: Unit) -> None:
-        logger.info(f"Building {unit.type_id} has finished")
+        await self.hub.on_building_construction_complete(unit)
 
-    async def on_unit_took_damage(self, unit: Unit, amount_damage_taken: float) -> None:
-        logger.info(f"Unit {unit.type_id} has taken {amount_damage_taken} damage")
+    async def on_unit_took_damage(self, unit: Unit, damage: float) -> None:
+        await self.hub.on_unit_took_damage(unit, damage)
 
+    async def on_enemy_unit_entered_vision(self, unit: Unit):
+        await self.hub.on_enemy_unit_entered_vision(unit)
 
-    """
-    Can use `python-sc2` hooks as usual, but make a call the inherited method in the superclass
-    Examples:
-    """
-    # async def on_start(self) -> None:
-    #     await super(MyBot, self).on_start()
-    #
-    #     # on_start logic here ...
-    #
-    # async def on_end(self, game_result: Result) -> None:
-    #     await super(MyBot, self).on_end(game_result)
-    #
-    #     # custom on_end logic here ...
-    #
-    # async def on_building_construction_complete(self, unit: Unit) -> None:
-    #     await super(MyBot, self).on_building_construction_complete(unit)
-    #
-    #     # custom on_building_construction_complete logic here ...
-    #
-    # async def on_unit_created(self, unit: Unit) -> None:
-    #     await super(MyBot, self).on_unit_created(unit)
-    #
-    #     # custom on_unit_created logic here ...
-    #
-    # async def on_unit_destroyed(self, unit_tag: int) -> None:
-    #     await super(MyBot, self).on_unit_destroyed(unit_tag)
-    #
-    #     # custom on_unit_destroyed logic here ...
-    #
-    # async def on_unit_took_damage(self, unit: Unit, amount_damage_taken: float) -> None:
-    #     await super(MyBot, self).on_unit_took_damage(unit, amount_damage_taken)
-    #
-    #     # custom on_unit_took_damage logic here ...
+    async def on_enemy_unit_left_vision(self, unit_tag: int):
+        await self.hub.on_enemy_unit_left_vision(unit_tag)
+
+    async def on_unit_type_changed(self, unit: Unit, previous_type: UnitTypeId):
+        await self.hub.on_unit_type_changed(unit, previous_type)
+
+    @property
+    def build_manager(self) -> BuildManager:
+        return self.hub(BuildManager.__name__)
+
+    @property
+    def debug_manager(self) -> DebugManager:
+        return self.hub(DebugManager.__name__)
+
+    @property
+    def expansion_manager(self) -> ExpansionManager:
+        return self.hub(ExpansionManager.__name__)
+
+    @property
+    def path_manager(self) -> PathManager:
+        return self.hub(PathManager.__name__)
+
+    @property
+    def resource_manager(self) -> ResourceManager:
+        return self.hub(ResourceManager.__name__)
+
+    @property
+    def role_manager(self) -> RoleManager:
+        return self.hub(RoleManager.__name__)
+
+    @property
+    def tech_manager(self) -> TechManager:
+        return self.hub(TechManager.__name__)
+
+    @property
+    def terrain_manager(self) -> TerrainManager:
+        return self.hub(TerrainManager.__name__)
+
+    @property
+    def unit_manager(self) -> UnitManager:
+        return self.hub(UnitManager.__name__)
+
+    @property
+    def race_worker(self) -> UnitTypeId:
+        return RACE_WORKER[JeroenBotSettings.RACE]
+
+    @property
+    def race_townhalls(self) -> Set[UnitTypeId]:
+        return RACE_TOWNHALLS[JeroenBotSettings.RACE]
+
+    @property
+    def race_townhall_base(self) -> UnitTypeId:
+        return RACE_TOWNHALLS_BASE[JeroenBotSettings.RACE]

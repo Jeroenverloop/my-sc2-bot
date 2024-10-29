@@ -12,5 +12,5 @@ class MacroBehaviour(Behaviour):
         super().__init__()
 
 
-    def execute(self, ai: "JeroenBot"):
-        pass
+    def execute(self, ai: "JeroenBot") -> bool:
+        return True

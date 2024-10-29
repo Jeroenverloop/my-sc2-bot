@@ -25,13 +25,12 @@ class ResourceGathering(MacroBehaviour):
 
     def execute(self, ai: "JeroenBot"):
 
-        workers: Units = ai.hub.role_manager.get_units_by_role(UnitRole.GATHERING, UnitTypeId.PROBE)
+        workers: Units = ai.role_manager.get_units_by_role(UnitRole.GATHERING, ai.race_worker)
 
-        resources_dict: dict[int, Unit] = ai.hub.resource_manager.resource_tag_to_unit_dict
+        resources_dict: dict[int, Unit] = ai.resource_manager.resource_tag_to_unit_dict
 
-
-        worker_to_mineral_patch_dict: Dict[int, int] = ai.hub.resource_manager.worker_to_mineral_patch_dict
-        worker_to_geyser_dict: Dict[int, int] = ai.hub.resource_manager.worker_to_geyser_dict
+        worker_to_mineral_patch_dict: Dict[int, int] = ai.resource_manager.worker_to_mineral_patch_dict
+        worker_to_geyser_dict: Dict[int, int] = ai.resource_manager.worker_to_geyser_dict
 
         for worker in workers:
 
@@ -61,24 +60,24 @@ class ResourceGathering(MacroBehaviour):
                             resource.type_id == UnitTypeId.ASSIMILATOR
                             and resource.vespene_contents == 0
                     ):
-                        ai.hub.resource_manager.remove_gas_building(resource_tag)
+                        ai.resource_manager.remove_gas_building(resource_tag)
                 except KeyError:
                     if assigned_mineral_patch:
                         logger.info("Remove mineral field")
-                        ai.hub.resource_manager.remove_mineral_field(resource_tag)
+                        ai.resource_manager.remove_mineral_field(resource_tag)
                     else:
                         logger.info("Remove gas building")
-                        ai.hub.resource_manager.remove_gas_building(resource_tag)
+                        ai.resource_manager.remove_gas_building(resource_tag)
                     continue
 
             if ai.townhalls and (assigned_mineral_patch or assigned_gas_building):
 
                 if dist_to_resource > 6.0 and not worker.is_carrying_resource:
                     worker.move(
-                        ai.hub.path_manager.find_next_point_in_path(
+                        ai.terrain_manager.find_next_point_in_path(
                             start=worker_position,
                             goal=resource_position,
-                            grid=ai.hub.path_manager.ground_grid,
+                            grid=ai.terrain_manager.ground_grid,
                         )
                     )
                 elif(
@@ -92,6 +91,7 @@ class ResourceGathering(MacroBehaviour):
                     worker(AbilityId.SMART, resource)
                 else:
                     self.do_standard_mining(ai, worker, resource)
+        return True
 
     def do_standard_mining(self, ai: "JeroenBot", worker: Unit, resource: Unit) -> None:
         worker_tag: int = worker.tag

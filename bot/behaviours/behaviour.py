@@ -9,5 +9,5 @@ class Behaviour:
 
 
     @abstractmethod
-    def execute(self, ai: "JeroenBot"):
-        pass
+    def execute(self, ai: "JeroenBot") -> bool:
+        return True
