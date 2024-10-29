@@ -1,25 +1,17 @@
 import random
-from typing import Dict, TYPE_CHECKING, Set, Union, Optional, List
+from typing import TYPE_CHECKING, Set, Union, Optional, List
 
-from cython_extensions import cy_closest_to
-from loguru import logger
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
-from sc2.unit import Unit
-from sc2.units import Units
 
 from bot.behaviours.macro.build_structure import BuildStructure
 from bot.behaviours.macro.macro_behaviour import MacroBehaviour
-from bot.consts import UnitRole, UnitValueType
-from bot.helpers.building_helper import BuildingSize, STRUCTURE_TO_BUILDING_SIZE
+from bot.consts import UnitValueType
 from bot.helpers.structure_helper import STRUCTURES, REQUIRE_POWER_STRUCTURE_TYPES
-from bot.helpers.unit_helper import UNIT_TRAINED_FROM, GATEWAY_UNITS, ALL_WORKER_TYPES
-from bot.helpers.upgrade_helper import UPGRADE_RESEARCHED_FROM
-from bot.jeroen_bot_settings import JeroenBotSettings
+from bot.helpers.unit_helper import UNIT_TRAINED_FROM, ALL_WORKER_TYPES
 from bot.models.army_composition import ArmyComposition
 from bot.models.expansion import Expansion
-from scripts.SC2MapAnalysis.examples.MassReaper.bot.consts import ALL_STRUCTURES
 
 if TYPE_CHECKING:
     from bot.jeroen_bot import JeroenBot
@@ -43,7 +35,7 @@ class ProductionController(MacroBehaviour):
 
         for unit_type in unit_types:
 
-            if unit_type not in ALL_STRUCTURES and unit_type not in ALL_WORKER_TYPES:
+            if unit_type not in STRUCTURES and unit_type not in ALL_WORKER_TYPES:
 
                 if army_comp.unit_config_dict[unit_type].value_type == UnitValueType.Percentage:
                     num_total_units += ai.units.filter(lambda u: u.type_id == unit_type).amount
@@ -119,63 +111,6 @@ class ProductionController(MacroBehaviour):
 
                             return BuildStructure(tech_to_build, structure_placement).execute(ai)
 
-        """       
-
-        if next_tech == unit_type_id:
-
-            max_units: int = 0
-
-            if unit_config.value_type == UnitValueType.Amount:
-                max_units = unit_config.value
-
-            if ai.unit_manager.own_army(unit_type_id).amount + ai.already_pending(unit_type_id) >= max_units:
-                continue
-
-            if next_tech in UNIT_TRAINED_FROM and ai.resource_manager.can_afford(next_tech):
-
-                trained_from_buildings: Set[UnitTypeId] = UNIT_TRAINED_FROM[next_tech]
-
-                for building in trained_from_buildings:
-                    available_buildings = ai.unit_manager.own_structures(building).ready.idle
-                    if available_buildings:
-                        available_buildings.random.train(next_tech)
-                        return True
-
-            continue
-
-        if isinstance(next_tech, UpgradeId):
-            if ai.can_afford(next_tech):
-                structure_type: UnitTypeId = UPGRADE_RESEARCHED_FROM[next_tech]
-                structures: Units = ai.unit_manager.own_structures(structure_type).ready.idle
-                if structures:
-                    structures.random.research(next_tech)
-                    return True
-            return False
-
-        elif isinstance(next_tech, UnitTypeId):
-
-            if next_tech in STRUCTURES:
-
-                if ai.tech_manager.structure_exists(next_tech):
-                    continue
-
-                structure_placement = self._get_building_placement(ai, next_tech)
-                if not structure_placement:
-                    continue
-
-                builder = ai.build_manager.get_builder(structure_placement)
-                if not builder:
-                    continue
-
-                if ai.build_manager.can_start_build_order(next_tech, structure_placement, builder):
-                    logger.info(f"Going to build {next_tech}")
-                    ai.build_manager.build_with_specific_worker(
-                        builder,
-                        next_tech,
-                        structure_placement
-                    )
-                    return True
-        """
         return False
 
 
